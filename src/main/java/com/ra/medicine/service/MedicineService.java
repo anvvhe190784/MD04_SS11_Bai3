@@ -1,5 +1,6 @@
 package com.ra.medicine.service;
 
+import com.ra.medicine.model.dto.ImportMedicineRequest;
 import com.ra.medicine.model.dto.MedicineResponse;
 import com.ra.medicine.model.dto.UpdateMedicineRequest;
 import com.ra.medicine.model.entity.Medicine;
@@ -15,4 +16,6 @@ public interface MedicineService {
     MedicineResponse updateMedicine(Medicine medicine);
 
     MedicineResponse updateMedicine(Long id, UpdateMedicineRequest request);
+
+    MedicineResponse importMedicine(ImportMedicineRequest request);
 }

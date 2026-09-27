@@ -1,23 +1,31 @@
-# MD04_SS11_Bai2: Data Synchronization and TTL (Time-To-Live) with Redis Cache
+# MD04_SS11_Bai3: Asynchronous Communication with Redis Pub/Sub
 
-A Spring Boot application demonstrating **Data Synchronization**, **TTL (Time-To-Live = 60 minutes)**, and **Cache Eviction (`@CacheEvict`)** with **Redis** and **Spring Data JPA**.
+A Spring Boot application demonstrating **Asynchronous Event-Driven Communication** and **Message Broker (Fire-and-forget)** using **Redis Pub/Sub** and **Spring Data Redis**.
 
 ---
 
 ## 1. System Overview & Architecture
 
-When medicine prices or details change, stale cache entries can mislead users with old pricing. This project implements:
-1. **Cache TTL (60 minutes)**: Ensures entries expire automatically if untouched.
-2. **Cache-Aside Pattern (`@Cacheable`)**: Fast retrieval from Redis for read queries.
-3. **Cache Eviction (`@CacheEvict`)**: When medicine information or price is updated, the old cache entry (`medicines::{id}`) is invalidated immediately so the subsequent query fetches fresh data from the database.
+When a pharmacy imports additional medicines into inventory, the system must immediately broadcast a notification to all active branch manager dashboards without tight coupling or synchronous blocking:
+1. **Lightweight Message Broker**: Redis Pub/Sub provides low-latency, fire-and-forget message distribution across channels.
+2. **Channel**: `pharmacy-alerts`
+3. **Publisher (Producer)**: When medicine is imported successfully via `POST /api/v1/medicines/import`, the service serializes `PharmacyAlertMessage` to JSON using `ObjectMapper` and publishes it to `pharmacy-alerts`:
+   ```json
+   {
+     "type": "IMPORT",
+     "message": "Đã nhập 100 hộp Panadol"
+   }
+   ```
+4. **Subscriber (Consumer)**: A Spring `@Service` implementing `MessageListener` registered in `RedisMessageListenerContainer` that listens to `pharmacy-alerts`, deserializes JSON with `ObjectMapper`, and logs the notification to the console in real time.
 
 ---
 
 ## 2. Tech Stack
 
 - **Java**: 21 LTS
-- **Framework**: Spring Boot 4.1.1 (Spring 6 / Spring Data Redis / Spring Data JPA)
-- **Cache Provider**: Redis 7 (via Lettuce client)
+- **Framework**: Spring Boot 4.1.1 (Spring Data Redis, Spring Data JPA, Spring Web MVC)
+- **Message Broker & Cache**: Redis 7 (via Lettuce client)
+- **Serialization**: Jackson `ObjectMapper` (with JavaTimeModule)
 - **Database**: H2 In-Memory Database
 - **Build Tool**: Gradle 9.7 (with Gradle Wrapper)
 - **Containerization**: Docker Compose
@@ -37,7 +45,7 @@ When medicine prices or details change, stale cache entries can mislead users wi
 docker compose up -d
 ```
 
-Verify Redis is running:
+Verify Redis is healthy:
 
 ```bash
 docker exec medicine-redis redis-cli ping
@@ -56,61 +64,63 @@ docker exec medicine-redis redis-cli ping
 
 ---
 
-## 4. Demonstrating Data Synchronization & Cache Eviction (4 Steps)
+## 4. API Endpoints & Verification
 
-### Step 1: Query Medicine ID=1 (Cache Miss)
-```bash
-curl http://localhost:8080/api/v1/medicines/1
-```
-- Console Output shows database query:
-  ```text
-  >>> [DATABASE HIT] Cache miss for medicine id: 1. Querying database...
-  Hibernate: select ... from medicines where id=?
-  >>> [DATABASE SUCCESS] Found medicine 'Paracetamol 500mg' from database.
-  ```
+### 1. Import Medicine (Triggers Redis Pub/Sub Broadcast)
 
-### Step 2: Query Medicine ID=1 Again (Cache Hit)
 ```bash
-curl http://localhost:8080/api/v1/medicines/1
-```
-- Served directly from Redis (`< 10ms`).
-- **No SQL statements executed.**
-
-### Step 3: Update Medicine Price (Cache Evict)
-```bash
-curl -X PUT http://localhost:8080/api/v1/medicines/1 \
+curl -X POST http://localhost:8080/api/v1/medicines/import \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "Paracetamol 500mg",
-    "activeIngredient": "Paracetamol",
-    "manufacturer": "Hau Giang Pharma",
-    "unitPrice": 3500.0,
-    "stockQuantity": 5000
+    "medicineId": 1,
+    "quantity": 100
   }'
 ```
-- Log confirms eviction:
-  ```text
-  >>> [CACHE EVICT] Evicting cache for medicine id: 1. Updating database...
-  Hibernate: update medicines set ... unit_price=? where id=?
-  ```
-- Verify key removal in Redis:
-  ```bash
-  docker exec medicine-redis redis-cli keys "*"
-  # medicines::1 is removed immediately!
-  ```
 
-### Step 4: Query Medicine ID=1 Again (Cache Miss & Refresh)
-```bash
-curl http://localhost:8080/api/v1/medicines/1
+**Expected Console Log on Subscriber**:
+```text
+================================================================================
+[REDIS SUBSCRIBER] Received message from channel 'pharmacy-alerts':
+Type: IMPORT
+Message: Đã nhập 100 hộp Paracetamol 500mg
+Raw JSON: {"type":"IMPORT","message":"Đã nhập 100 hộp Paracetamol 500mg"}
+================================================================================
 ```
-- SQL query executed again to fetch the updated price (`3500.0`).
-- Fresh data is stored back into Redis with a 60-minute TTL.
+
+### 2. Publish Custom Alert Directly
+
+```bash
+curl -X POST http://localhost:8080/api/v1/medicines/alerts \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "IMPORT",
+    "message": "Đã nhập 100 hộp Panadol"
+  }'
+```
+
+**Expected Console Log on Subscriber**:
+```text
+================================================================================
+[REDIS SUBSCRIBER] Received message from channel 'pharmacy-alerts':
+Type: IMPORT
+Message: Đã nhập 100 hộp Panadol
+Raw JSON: {"type":"IMPORT","message":"Đã nhập 100 hộp Panadol"}
+================================================================================
+```
+
+### 3. Listen to Redis Channel via Redis CLI
+
+You can also attach a Redis CLI subscriber directly:
+
+```bash
+docker exec -it medicine-redis redis-cli SUBSCRIBE pharmacy-alerts
+```
 
 ---
 
-## 5. Running Automated Tests
+## 5. Automated Testing
 
-Run the integration test suite verifying both Cache Hit and Cache Eviction:
+Run the test suite verifying Cache aside, TTL eviction, and asynchronous Redis Pub/Sub message delivery:
 
 ```bash
 .\gradlew.bat test

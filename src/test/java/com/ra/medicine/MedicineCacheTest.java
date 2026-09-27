@@ -97,8 +97,7 @@ class MedicineCacheTest {
                 step1Res.activeIngredient(),
                 step1Res.manufacturer(),
                 newPrice,
-                step1Res.stockQuantity()
-        );
+                step1Res.stockQuantity());
         MedicineResponse updatedRes = medicineService.updateMedicine(medicineToUpdate);
         assertEquals(newPrice, updatedRes.unitPrice());
 
@@ -115,7 +114,8 @@ class MedicineCacheTest {
         assertEquals(newPrice, step4Res.unitPrice(), "Giá thuốc trả về phải là giá mới sau khi nạp lại từ DB");
 
         // Xác nhận Redis đã được nạp lại với key và giá mới
-        assertTrue(Boolean.TRUE.equals(redisTemplate.hasKey(cacheKey)), "Redis phải nạp lại key medicines::2 sau Bước 4");
+        assertTrue(Boolean.TRUE.equals(redisTemplate.hasKey(cacheKey)),
+                "Redis phải nạp lại key medicines::2 sau Bước 4");
         String cachedValue = redisTemplate.opsForValue().get(cacheKey);
         assertNotNull(cachedValue);
         assertTrue(cachedValue.contains("9999.0"), "Dữ liệu cache trong Redis phải chứa giá mới 9999.0");

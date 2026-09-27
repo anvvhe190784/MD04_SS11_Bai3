@@ -1,12 +1,16 @@
 package com.ra.medicine.controller;
 
+import com.ra.medicine.model.dto.ImportMedicineRequest;
 import com.ra.medicine.model.dto.MedicineResponse;
+import com.ra.medicine.model.dto.PharmacyAlertMessage;
 import com.ra.medicine.model.dto.UpdateMedicineRequest;
+import com.ra.medicine.pubsub.PharmacyAlertPublisher;
 import com.ra.medicine.service.MedicineService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -20,6 +24,7 @@ import java.util.List;
 public class MedicineController {
 
     private final MedicineService medicineService;
+    private final PharmacyAlertPublisher pharmacyAlertPublisher;
 
     @GetMapping("/{id}")
     public ResponseEntity<MedicineResponse> getMedicineById(@PathVariable Long id) {
@@ -40,5 +45,19 @@ public class MedicineController {
     ) {
         MedicineResponse updated = medicineService.updateMedicine(id, request);
         return ResponseEntity.ok(updated);
+    }
+
+    @PostMapping("/import")
+    public ResponseEntity<MedicineResponse> importMedicine(
+            @RequestBody ImportMedicineRequest request
+    ) {
+        MedicineResponse imported = medicineService.importMedicine(request);
+        return ResponseEntity.ok(imported);
+    }
+
+    @PostMapping("/alerts")
+    public ResponseEntity<Void> publishAlert(@RequestBody PharmacyAlertMessage alert) {
+        pharmacyAlertPublisher.publishAlert(alert);
+        return ResponseEntity.accepted().build();
     }
 }

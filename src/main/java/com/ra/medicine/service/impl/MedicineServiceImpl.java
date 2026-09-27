@@ -1,8 +1,11 @@
 package com.ra.medicine.service.impl;
 
+import com.ra.medicine.model.dto.ImportMedicineRequest;
 import com.ra.medicine.model.dto.MedicineResponse;
+import com.ra.medicine.model.dto.PharmacyAlertMessage;
 import com.ra.medicine.model.dto.UpdateMedicineRequest;
 import com.ra.medicine.model.entity.Medicine;
+import com.ra.medicine.pubsub.PharmacyAlertPublisher;
 import com.ra.medicine.repository.MedicineRepository;
 import com.ra.medicine.service.MedicineService;
 import lombok.RequiredArgsConstructor;
@@ -22,6 +25,7 @@ import java.util.List;
 public class MedicineServiceImpl implements MedicineService {
 
     private final MedicineRepository medicineRepository;
+    private final PharmacyAlertPublisher pharmacyAlertPublisher;
 
     @Override
     @Transactional(readOnly = true)
@@ -83,6 +87,29 @@ public class MedicineServiceImpl implements MedicineService {
 
         Medicine saved = medicineRepository.save(existing);
         log.info(">>> [DATABASE UPDATE] Medicine id {} updated with new price {}.", saved.getId(), saved.getUnitPrice());
+        return MedicineResponse.fromEntity(saved);
+    }
+
+    @Override
+    @Transactional
+    @CacheEvict(value = "medicines", key = "#request.medicineId()")
+    public MedicineResponse importMedicine(ImportMedicineRequest request) {
+        log.info(">>> [MEDICINE IMPORT] Processing import for medicine id: {}, quantity: {}",
+                request.medicineId(), request.quantity());
+
+        Medicine medicine = medicineRepository.findById(request.medicineId())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                        "Medicine not found with id: " + request.medicineId()));
+
+        int currentStock = medicine.getStockQuantity() != null ? medicine.getStockQuantity() : 0;
+        medicine.setStockQuantity(currentStock + request.quantity());
+        Medicine saved = medicineRepository.save(medicine);
+
+        // Publish alert to Redis Pub/Sub channel pharmacy-alerts
+        String alertText = "Đã nhập " + request.quantity() + " hộp " + saved.getName();
+        PharmacyAlertMessage alert = new PharmacyAlertMessage("IMPORT", alertText);
+        pharmacyAlertPublisher.publishAlert(alert);
+
         return MedicineResponse.fromEntity(saved);
     }
 }
