@@ -1,33 +1,15 @@
-# MD04_SS11_Bai1: Medicine Catalog Caching with Redis
+# MD04_SS11_Bai2: Data Synchronization and TTL (Time-To-Live) with Redis Cache
 
-A Spring Boot application demonstrating the **Cache-Aside Pattern** with **Redis** and **Spring Data JPA** for an extensive medicine catalog in a pharmacy management system.
+A Spring Boot application demonstrating **Data Synchronization**, **TTL (Time-To-Live = 60 minutes)**, and **Cache Eviction (`@CacheEvict`)** with **Redis** and **Spring Data JPA**.
 
 ---
 
 ## 1. System Overview & Architecture
 
-When searching or retrieving medicine details from thousands of items, hitting the database repeatedly causes high latency and high database load. This service implements the **Cache-Aside Pattern**:
-
-1. **Client Request**: Client queries `GET /api/v1/medicines/{id}`.
-2. **Cache Check**: Spring Cache checks Redis for the key `medicines::{id}`.
-3. **Cache Miss (1st Call)**:
-   - System executes query to the H2 database (`MedicineRepository.findById(id)`).
-   - SQL query is logged to the console.
-   - Result is serialized to JSON and stored into Redis with a 10-minute TTL.
-4. **Cache Hit (2nd+ Call)**:
-   - Result is served directly from Redis without executing database queries.
-   - Response time drops significantly to `< 10ms`.
-
-```
-Client ───> [MedicineController] ───> [MedicineService]
-                                            │
-                           ┌────────────────┴────────────────┐
-                           │                                 │
-                   (1) Check Cache                   (2) If Cache Miss
-                           ▼                                 ▼
-                     [Redis Cache]                    [H2 Database]
-                  (medicines::{id})                   (JPA Entity)
-```
+When medicine prices or details change, stale cache entries can mislead users with old pricing. This project implements:
+1. **Cache TTL (60 minutes)**: Ensures entries expire automatically if untouched.
+2. **Cache-Aside Pattern (`@Cacheable`)**: Fast retrieval from Redis for read queries.
+3. **Cache Eviction (`@CacheEvict`)**: When medicine information or price is updated, the old cache entry (`medicines::{id}`) is invalidated immediately so the subsequent query fetches fresh data from the database.
 
 ---
 
@@ -51,8 +33,6 @@ Client ───> [MedicineController] ───> [MedicineService]
 
 ### Step 1: Start Redis
 
-Start the Redis server container using Docker Compose:
-
 ```bash
 docker compose up -d
 ```
@@ -66,97 +46,71 @@ docker exec medicine-redis redis-cli ping
 
 ### Step 2: Build and Run the Application
 
-Using Gradle Wrapper:
-
 ```bash
-# On Linux/macOS
-./gradlew bootRun
-
-# On Windows
+# Windows
 .\gradlew.bat bootRun
+
+# Linux / macOS
+./gradlew bootRun
 ```
 
 ---
 
-## 4. API Endpoints & Testing
+## 4. Demonstrating Data Synchronization & Cache Eviction (4 Steps)
 
-### Initial Seed Data
-
-The application automatically seeds 7 medicine records on startup:
-- `ID 1`: Paracetamol 500mg
-- `ID 2`: Panadol Extra
-- `ID 3`: Amoxicillin 500mg
-- `ID 4`: Ibuprofen 400mg
-- `ID 5`: Cetirizine 10mg
-- `ID 6`: Augmentin 1g
-- `ID 7`: Berberin 100mg
-
-### 1. Get Medicine Detail (Cached)
-
-```http
-GET /api/v1/medicines/{id}
-```
-
-**Example Request:**
-
+### Step 1: Query Medicine ID=1 (Cache Miss)
 ```bash
 curl http://localhost:8080/api/v1/medicines/1
 ```
-
-**Sample Response:**
-
-```json
-{
-  "id": 1,
-  "name": "Paracetamol 500mg",
-  "activeIngredient": "Paracetamol",
-  "manufacturer": "Hau Giang Pharma",
-  "unitPrice": 1500.0,
-  "stockQuantity": 5000
-}
-```
-
-### 2. Observing the Cache-Aside Behavior
-
-- **Call 1 (Cold Cache)**:
-  ```bash
-  curl http://localhost:8080/api/v1/medicines/1
-  ```
-  Console Output:
+- Console Output shows database query:
   ```text
   >>> [DATABASE HIT] Cache miss for medicine id: 1. Querying database...
-  Hibernate: select m1_0.id,m1_0.active_ingredient,m1_0.manufacturer,m1_0.name,m1_0.stock_quantity,m1_0.unit_price from medicines m1_0 where m1_0.id=?
+  Hibernate: select ... from medicines where id=?
   >>> [DATABASE SUCCESS] Found medicine 'Paracetamol 500mg' from database.
   ```
 
-- **Call 2 (Warm Cache)**:
-  ```bash
-  curl http://localhost:8080/api/v1/medicines/1
-  ```
-  Console Output:
-  - **No SQL statements are executed.**
-  - Response time is `< 10ms`.
-
-- **Inspect Cached Data in Redis**:
-  ```bash
-  docker exec -it medicine-redis redis-cli keys "*"
-  # Output: 1) "medicines::1"
-
-  docker exec -it medicine-redis redis-cli get "medicines::1"
-  # Output: JSON representation of MedicineResponse
-  ```
-
-### 3. Get All Medicines
-
-```http
-GET /api/v1/medicines
+### Step 2: Query Medicine ID=1 Again (Cache Hit)
+```bash
+curl http://localhost:8080/api/v1/medicines/1
 ```
+- Served directly from Redis (`< 10ms`).
+- **No SQL statements executed.**
+
+### Step 3: Update Medicine Price (Cache Evict)
+```bash
+curl -X PUT http://localhost:8080/api/v1/medicines/1 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Paracetamol 500mg",
+    "activeIngredient": "Paracetamol",
+    "manufacturer": "Hau Giang Pharma",
+    "unitPrice": 3500.0,
+    "stockQuantity": 5000
+  }'
+```
+- Log confirms eviction:
+  ```text
+  >>> [CACHE EVICT] Evicting cache for medicine id: 1. Updating database...
+  Hibernate: update medicines set ... unit_price=? where id=?
+  ```
+- Verify key removal in Redis:
+  ```bash
+  docker exec medicine-redis redis-cli keys "*"
+  # medicines::1 is removed immediately!
+  ```
+
+### Step 4: Query Medicine ID=1 Again (Cache Miss & Refresh)
+```bash
+curl http://localhost:8080/api/v1/medicines/1
+```
+- SQL query executed again to fetch the updated price (`3500.0`).
+- Fresh data is stored back into Redis with a 60-minute TTL.
 
 ---
 
 ## 5. Running Automated Tests
 
-Run the integration test suite verifying cache miss and cache hit:
+Run the integration test suite verifying both Cache Hit and Cache Eviction:
 
 ```bash
 .\gradlew.bat test
